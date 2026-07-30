@@ -31,7 +31,34 @@ NAV_TIMEOUT_MS = int(os.getenv("NAV_TIMEOUT_MS", "30000"))
 HEALTH_STALE_SECONDS = int(os.getenv("HEALTH_STALE_SECONDS", "300"))
 HEALTH_WARNING_SECONDS = int(os.getenv("HEALTH_WARNING_SECONDS", "300"))
 STATE_PATH = Path(os.getenv("STATE_PATH", "/data/state.db"))
-PORT = int(os.getenv("PORT", "8080"))
+def resolve_port() -> int:
+    """Use the host-provided public port, then a portable fallback."""
+    raw = (os.getenv("PORT") or os.getenv("HEALTH_PORT") or "8080").strip()
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid PORT/HEALTH_PORT value: {raw!r}") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError(f"PORT/HEALTH_PORT must be between 1 and 65535, got {port}")
+    return port
+
+
+def detect_hosting_platform() -> str:
+    if os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"):
+        return "Render"
+    if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"):
+        return "Railway"
+    if os.getenv("FLY_APP_NAME"):
+        return "Fly.io"
+    if os.getenv("KOYEB_APP_NAME"):
+        return "Koyeb"
+    if os.getenv("NORTHFLANK_PROJECT_ID"):
+        return "Northflank"
+    return "generic Docker/local"
+
+
+PORT = resolve_port()
+HOSTING_PLATFORM = detect_hosting_platform()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_TOKEN = os.getenv("NTFY_TOKEN", "").strip()
@@ -227,7 +254,7 @@ def start_health_server() -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="health-server")
     thread.start()
-    log.info("Health server listening on port %s", PORT)
+    log.info("Health server listening on 0.0.0.0:%s (%s)", PORT, HOSTING_PLATFORM)
     return server
 
 
