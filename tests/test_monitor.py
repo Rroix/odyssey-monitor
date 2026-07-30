@@ -24,3 +24,15 @@ def test_available_seat_filter():
     assert not monitor.is_standard_available_seat("Companion seat H12")
     assert not monitor.is_standard_available_seat("Seat H12 occupied")
     assert not monitor.is_standard_available_seat("Seat H12", disabled=True)
+
+
+def test_resolve_port_prefers_platform_port(monkeypatch):
+    monkeypatch.setenv("PORT", "10000")
+    monkeypatch.setenv("HEALTH_PORT", "8080")
+    assert monitor.resolve_port() == 10000
+
+
+def test_resolve_port_uses_health_fallback(monkeypatch):
+    monkeypatch.delenv("PORT", raising=False)
+    monkeypatch.setenv("HEALTH_PORT", "9090")
+    assert monitor.resolve_port() == 9090
