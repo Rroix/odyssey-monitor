@@ -237,14 +237,30 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
+
         snapshot = runtime.snapshot()
         status = 200 if snapshot["status"] == "ok" else 503
         body = json.dumps(snapshot).encode()
+
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        if self.path not in {"/", "/health", "/healthz"}:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        snapshot = runtime.snapshot()
+        status = 200 if snapshot["status"] == "ok" else 503
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, *_: Any) -> None:
         return
