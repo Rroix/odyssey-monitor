@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: odyssey-monitor
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NTFY_TOPIC
+        sync: false
+      - key: NTFY_SERVER
+        value: https://ntfy.sh
+      - key: CHECK_INTERVAL_SECONDS
+        value: "15"
+      - key: TIMEZONE
+        value: America/New_York
+      - key: END_DATE
+        value: "2026-08-06"
+      - key: SEND_STARTUP_NOTIFICATION
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
