@@ -30,6 +30,10 @@ BROWSER_REFRESH_SECONDS = int(os.getenv("BROWSER_REFRESH_SECONDS", "14400"))
 NAV_TIMEOUT_MS = int(os.getenv("NAV_TIMEOUT_MS", "30000"))
 HEALTH_STALE_SECONDS = int(os.getenv("HEALTH_STALE_SECONDS", "300"))
 HEALTH_WARNING_SECONDS = int(os.getenv("HEALTH_WARNING_SECONDS", "300"))
+ALIVE_NOTIFICATION_SECONDS = max(
+    3600,
+    int(os.getenv("ALIVE_NOTIFICATION_SECONDS", "86400")),
+)
 STATE_PATH = Path(os.getenv("STATE_PATH", "/data/state.db"))
 def resolve_port() -> int:
     """Use the host-provided public port, then a portable fallback."""
@@ -62,7 +66,6 @@ HOSTING_PLATFORM = detect_hosting_platform()
 NTFY_SERVER = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TOPIC = os.getenv("NTFY_TOPIC", "").strip()
 NTFY_TOKEN = os.getenv("NTFY_TOKEN", "").strip()
-SEND_STARTUP_NOTIFICATION = os.getenv("SEND_STARTUP_NOTIFICATION", "true").lower() in {"1", "true", "yes"}
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 USER_AGENT = os.getenv(
     "USER_AGENT",
@@ -214,6 +217,14 @@ class StateDB:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS alerts (fingerprint TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload TEXT NOT NULL)"
         )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         self.conn.commit()
         self.lock = threading.Lock()
 
@@ -227,6 +238,25 @@ class StateDB:
             self.conn.execute(
                 "INSERT OR IGNORE INTO alerts(fingerprint, created_at, payload) VALUES (?, ?, ?)",
                 (fingerprint, datetime.now(TZ).isoformat(), json.dumps(payload, ensure_ascii=False)),
+            )
+            self.conn.commit()
+    def get_metadata(self, key: str) -> str | None:
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT value FROM metadata WHERE key = ?",
+                (key,),
+            ).fetchone()
+            return row[0] if row else None
+
+    def set_metadata(self, key: str, value: str) -> None:
+        with self.lock:
+            self.conn.execute(
+                """
+                INSERT INTO metadata(key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
             )
             self.conn.commit()
 
@@ -512,14 +542,26 @@ async def run_monitor() -> None:
         raise RuntimeError("NTFY_TOPIC must be configured")
 
     db = StateDB(STATE_PATH)
-    if SEND_STARTUP_NOTIFICATION:
-        await notify(
-            "Odyssey monitor online",
-            f"Monitoring AMC Lincoln Square 13 IMAX 70mm standard seats every {CHECK_INTERVAL_SECONDS}s, "
-            f"from {dates[0]} through {dates[-1]}.",
-            priority="default",
-            tags="white_check_mark,movie_camera",
-        )
+
+    log.info(
+        "Monitoring AMC Lincoln Square 13 IMAX 70mm standard seats every %ss, "
+        "from %s through %s.",
+        CHECK_INTERVAL_SECONDS,
+        dates[0],
+        dates[-1],
+    )
+
+    last_alive_notification = 0.0
+    stored_alive_time = db.get_metadata("last_alive_notification")
+
+    if stored_alive_time:
+        try:
+            last_alive_notification = float(stored_alive_time)
+        except ValueError:
+            log.warning(
+                "Invalid stored last_alive_notification value: %r",
+                stored_alive_time,
+            )
 
     async with async_playwright() as pw:
         browser: Browser | None = None
@@ -605,9 +647,35 @@ async def run_monitor() -> None:
                     snap = runtime.snapshot()
                     log.info(
                         "Heartbeat: no new seat alert | rounds=%s pages_ok=%s pages_failed=%s showtimes=%s",
-                        snap["rounds"], snap["pages_ok"], snap["pages_failed"], len(showtimes),
+                        snap["rounds"],
+                        snap["pages_ok"],
+                        snap["pages_failed"],
+                        len(showtimes),
                     )
                     last_heartbeat = time.time()
+
+                if time.time() - last_alive_notification >= ALIVE_NOTIFICATION_SECONDS:
+                    snap = runtime.snapshot()
+                    alive_sent = await notify(
+                        "Odyssey monitor alive",
+                        (
+                            "Service is still alive.\n"
+                            f"Uptime: {snap['uptime_seconds']} seconds\n"
+                            f"Checks completed: {snap['rounds']}\n"
+                            f"Successful pages: {snap['pages_ok']}\n"
+                            f"Failed pages: {snap['pages_failed']}\n"
+                            f"Seat alerts sent: {snap['alerts_sent']}"
+                        ),
+                        priority="default",
+                        tags="white_check_mark,movie_camera",
+                    )
+
+                    if alive_sent:
+                        last_alive_notification = time.time()
+                        db.set_metadata(
+                            "last_alive_notification",
+                            str(last_alive_notification),
+                        )
 
             except Exception as exc:
                 restart_failures += 1
